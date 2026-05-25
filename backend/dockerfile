@@ -1,0 +1,21 @@
+# 1. Chọn hệ điều hành cơ sở là Node.js phiên bản nhẹ (Alpine)
+FROM node:20-alpine
+
+# 2. Tạo thư mục làm việc bên trong Container
+WORKDIR /usr/src/app
+
+# 3. Copy 2 file quản lý thư viện vào trước
+COPY package*.json ./
+
+# 4. Cài đặt các thư viện (chỉ cài những package thực sự cần thiết để chạy)
+RUN npm install --production
+
+# 5. Copy toàn bộ code (thư mục src, static...) vào container
+COPY . .
+
+# 6. Mở cổng 5000 để bên ngoài có thể giao tiếp với server
+EXPOSE 5000
+
+# 7. Lệnh khởi động server
+# Hãy đảm bảo trong package.json của em có dòng: "start": "node src/app.js"
+CMD ["npm", "start"]

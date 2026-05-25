@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # 1. DỊCH VỤ DATABASE MONGODB
+  mongodb:
+    image: mongo:latest
+    container_name: cspm_mongo
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo_data:/data/db 
+
+  # 2. DỊCH VỤ REDIS (Bộ nhớ đệm tốc độ cao)
+  redis:
+    image: redis:alpine
+    container_name: cspm_redis
+    ports:
+      - "6380:6379"
+
+  # 3. DỊCH VỤ LOCALSTACK (Giả lập AWS S3)
+  localstack:
+    image: localstack/localstack:2.0.0
+    container_name: aws_local_simulator
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - DEBUG=1
+
+  # 4. DỊCH VỤ BACKEND CỦA EM
+  backend:
+    build: . 
+    container_name: cspm_backend
+    env_file:
+      - .env  # ÉP DOCKER ĐỌC FILE .ENV Ở NGOÀI
+    ports:
+      - "5001:5000"
+    depends_on:
+      - mongodb
+      - redis
+      - localstack 
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongodb:27017/cspm_project 
+      - REDIS_URL=redis://redis:6379 
+      - JWT_SECRET=DuAnCSPMCuaHưngDepTrai2026!@#
+      - DISCORD_TOKEN=${DISCORD_TOKEN}       
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+      - AWS_ENDPOINT=http://localstack:4566 
+      - AWS_REGION=ap-southeast-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+
+volumes:
+  mongo_data:
