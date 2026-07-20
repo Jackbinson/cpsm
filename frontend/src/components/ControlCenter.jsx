@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import axiosClient from '../api/axiosClient';
 
 const Center = () => {
   const [scanData, setScanData] = useState([]);
@@ -11,12 +12,11 @@ const Center = () => {
     const fetchScanData = async () => {
       try {
         setLoading(true);
-        // Đổi URL này theo route API backend của bạn
-        const response = await fetch('/api/scans/results');
-        const data = await response.json();
+        const response = await axiosClient.get('/scans/scans');
+        const data = response.data;
         
         // Cập nhật dữ liệu từ backend (danh sách gồm S3, EC2, IAM)
-        setScanData(data.results || []);
+        setScanData(Array.isArray(data.data) ? data.data : []);
       } catch (error) {
         console.error('Lỗi khi tải dữ liệu quét:', error);
       } finally {
@@ -29,11 +29,11 @@ const Center = () => {
 
   // Logic lọc dữ liệu theo Tab
   const filteredData = scanData.filter(item => 
-    activeTab === 'ALL' ? true : item.service === activeTab
+    activeTab === 'ALL' ? true : item.resourceType?.includes(activeTab)
   );
 
   // Tính toán thống kê cho Pie Chart
-  const safeCount = filteredData.filter(item => item.status === 'Safe' || item.status === 'Compliant').length;
+  const safeCount = filteredData.filter(item => !item.isViolating).length;
   const vulnerableCount = filteredData.length - safeCount;
   
   const chartData = [
@@ -140,11 +140,11 @@ const Center = () => {
               ) : (
                 filteredData.map((item, index) => (
                   <tr key={index} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{item.service}</td>
+                    <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{item.resourceType}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-gray-600">{item.resourceName}</td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        item.status === 'Safe' || item.status === 'Compliant' 
+                        !item.isViolating 
                           ? 'bg-emerald-100 text-emerald-800' 
                           : 'bg-red-100 text-red-800'
                       }`}>
@@ -152,7 +152,7 @@ const Center = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-600 max-w-md truncate">
-                      {item.details || 'Không có ghi chú'}
+                      {item.status || 'Không có ghi chú'}
                     </td>
                   </tr>
                 ))

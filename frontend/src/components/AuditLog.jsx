@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
+import axiosClient, { API_BASE_URL } from '../api/axiosClient';
 
 const AuditLogs = () => {
   const [logs, setLogs] = useState([]);
@@ -7,7 +8,9 @@ const AuditLogs = () => {
   const [socketConnected, setSocketConnected] = useState(false);
 
   useEffect(() => {
-    const socket = io('http://localhost:5000', {
+    const socketBaseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+
+    const socket = io(socketBaseUrl, {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -35,16 +38,16 @@ const AuditLogs = () => {
       setSocketConnected(false);
     });
 
-    fetch('http://localhost:5000/api/v1/scans/logs')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          setLogs(data.data);
+    axiosClient.get('/scans/logs')
+      .then((response) => {
+        if (response?.data?.success) {
+          setLogs(response.data.data || []);
         }
-        setIsLoading(false);
       })
-      .catch(err => {
+      .catch((err) => {
         console.error("Error loading logs:", err);
+      })
+      .finally(() => {
         setIsLoading(false);
       });
 

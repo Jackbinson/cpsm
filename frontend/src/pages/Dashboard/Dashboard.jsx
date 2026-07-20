@@ -29,10 +29,11 @@ const Dashboard = () => {
 
   const fetchScans = async () => {
     try {
-      const response = await axiosClient.get('/scans');
-      setScans(response.data.data);
+      const response = await axiosClient.get('/scans/scans');
+      setScans(Array.isArray(response?.data?.data) ? response.data.data : []);
     } catch (error) {
       console.error("Lỗi khi tải dữ liệu rà quét:", error);
+      setScans([]);
     } finally {
       setLoading(false);
     }
@@ -45,11 +46,12 @@ const Dashboard = () => {
   const handleRunScan = async () => {
     setIsScanning(true);
     try {
-      await axiosClient.post('/scans/run');
-      await fetchScans(); 
+      const response = await axiosClient.post('/scans/scan');
+      await fetchScans();
+      alert(response?.data?.message || 'Đã gửi yêu cầu rà quét tới backend thành công.');
     } catch (error) {
       console.error("Lỗi khi rà quét:", error);
-      alert("Có lỗi xảy ra khi rà quét máy chủ AWS!");
+      alert("Có lỗi xảy ra khi rà quét máy chủ AWS: " + (error.response?.data?.message || error.message));
     } finally {
       setIsScanning(false);
     }
@@ -61,7 +63,6 @@ const Dashboard = () => {
     
     setIsFixing(true);
     try {
-      // Gửi lệnh vá lỗi lên Backend kèm theo ID của bản ghi
       const response = await axiosClient.post(`/scans/fix/${selectedScan._id}`);
       
       if (response.data.success) {

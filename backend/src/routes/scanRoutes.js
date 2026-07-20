@@ -4,6 +4,7 @@ import { runCloudScan, getScan, fixCloudResource, getAuditLogs } from '../contro
 const router = express.Router();
 
 router.post('/scan', runCloudScan);
+router.post('/run', runCloudScan);
 router.get('/scans', getScan);
 router.post('/fix/:id', fixCloudResource);
 router.get('/logs', getAuditLogs); 

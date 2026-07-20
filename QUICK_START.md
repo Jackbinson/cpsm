@@ -15,7 +15,7 @@ npm install socket.io@^4.8.3
 cd frontend
 npm install socket.io-client@^4.8.3
 ```
-
+ q
 ### **Step 2: Start the Application**
 
 **Terminal 1 - Backend:**

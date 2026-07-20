@@ -1,6 +1,6 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import connectDB from './config/db.js';
@@ -8,7 +8,6 @@ import scanRoutes from './routes/scanRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import './services/discordService.js';
 
-dotenv.config();
 connectDB();
 
 const app = express();

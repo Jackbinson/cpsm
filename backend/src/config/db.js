@@ -1,14 +1,19 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const connectDB = async () => {
   try {
-    // Mongoose sẽ lấy chuỗi kết nối từ file .env để gọi lên Atlas
-    const conn = await mongoose.connect(process.env.MONGO_URI);
-    
-    console.log(`🟢 MongoDB Atlas đã kết nối thành công: ${conn.connection.host}`);
+    const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
+
+    if (!mongoUri) {
+      throw new Error("Missing MONGO_URI or MONGODB_URI in environment");
+    }
+
+    const conn = await mongoose.connect(mongoUri);
+
+    console.log(`MongoDB connected: ${conn.connection.host}`);
   } catch (error) {
-    console.error(`🔴 Lỗi kết nối MongoDB: ${error.message}`);
-    process.exit(1); 
+    console.error(`MongoDB connection error: ${error.message}`);
+    process.exit(1);
   }
 };
 

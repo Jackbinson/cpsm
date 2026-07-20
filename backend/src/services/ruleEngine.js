@@ -1,9 +1,20 @@
+const hasFullPublicAccessBlock = (config) => {
+  return Boolean(
+    config?.BlockPublicAcls &&
+      config?.IgnorePublicAcls &&
+      config?.BlockPublicPolicy &&
+      config?.RestrictPublicBuckets
+  );
+};
+
 export const checkS3Compliance = (bucket) => {
-  // Logic kiểm tra: Hiện tại mình giả lập mọi bucket tìm thấy đều là "Cảnh báo" 
-  // để test tính năng Auto-fix và Discord Alert.
+  const isProtected = hasFullPublicAccessBlock(bucket.PublicAccessBlock);
+
   return {
-    isViolating: true,
-    status: 'Cảnh báo',
-    reason: 'Phát hiện S3 Bucket đang ở chế độ Public'
+    isViolating: !isProtected,
+    status: isProtected ? "An toàn" : "Cảnh báo",
+    reason: isProtected
+      ? "S3 Bucket đã bật đầy đủ Block Public Access."
+      : "S3 Bucket chưa bật đầy đủ Block Public Access.",
   };
 };

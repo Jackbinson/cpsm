@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import axiosClient from '../api/axiosClient';
 
 const Dashboard = () => {
   const [scans, setScans] = useState([]);
@@ -7,11 +8,9 @@ const Dashboard = () => {
 
   // 1. GỌI API LẤY DỮ LIỆU TỪ BACKEND
   useEffect(() => {
-    // Thay đổi URL này nếu Backend của em chạy ở cổng khác
-    fetch('http://localhost:5000/api/scans') 
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) setScans(data.data);
+    axiosClient.get('/scans/scans')
+      .then(response => {
+        if (response.data.success) setScans(response.data.data);
       })
       .catch(err => console.error("Lỗi tải dữ liệu:", err));
   }, []);
