@@ -1,24 +1,18 @@
-import cron from 'node-cron';
-import { runCloudScan } from '../controllers/scanController.js';
+import cron from "node-cron";
+import { enqueueScan } from "./scanJobService.js";
 
 export const startCronJobs = () => {
-    cron.schedule('0 * * * *', async () => {
-        console.log('⏰ [Cron Job] Bắt đầu phiên tuần tra Cloud định kỳ...');
-        try {
-            const req = {};
-            const res = {
-                statusCode: 200,
-                status: function(code) { this.statusCode = code; return this; },
-                json: function(data) { this.data = data; return this; }
-            };
-  
-            await runCloudScan(req, res);
-            
-            console.log(`✅ [Cron Job] Tuần tra hoàn tất: ${res.data?.message || 'Không có lỗi'}`);
-        } catch (error) {
-            console.error('❌ [Cron Job] Lỗi trong quá trình tuần tra:', error.message);
-        }
-    });
-
-    console.log('🕒 [Cron] Hệ thống tuần tra 24/7 đã được kích hoạt!');
+  cron.schedule("0 * * * *", async () => {
+    const hour = new Date().toISOString().slice(0, 13);
+    try {
+      const { scanRun, created } = await enqueueScan({
+        idempotencyKey: `cron:${hour}`,
+        idempotencyScope: "system:cron",
+        requestPayload: { source: "cron", hour },
+      });
+      console.log(`[Cron] ${created ? "Queued" : "Reused"} scan ${scanRun.scanId}`);
+    } catch (error) {
+      console.error("[Cron] Could not queue scan:", error.message);
+    }
+  });
 };

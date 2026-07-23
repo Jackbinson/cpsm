@@ -14,15 +14,9 @@ const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY;
 const AWS_SESSION_TOKEN = process.env.AWS_SESSION_TOKEN;
 
 const buildClientConfig = (extraConfig = {}) => {
-  const config = {
-    region: AWS_REGION,
-    ...extraConfig,
-  };
+  const config = { region: AWS_REGION, ...extraConfig };
 
-  if (AWS_ENDPOINT) {
-    config.endpoint = AWS_ENDPOINT;
-  }
-
+  if (AWS_ENDPOINT) config.endpoint = AWS_ENDPOINT;
   if (AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY) {
     config.credentials = {
       accessKeyId: AWS_ACCESS_KEY_ID,
@@ -38,47 +32,48 @@ const s3Client = new S3Client(buildClientConfig(AWS_ENDPOINT ? { forcePathStyle:
 const ec2Client = new EC2Client(buildClientConfig());
 const iamClient = new IAMClient(buildClientConfig());
 
-export const getAllBuckets = async () => {
-  const response = await s3Client.send(new ListBucketsCommand({}));
+const sendCommand = (client, command, signal) =>
+  client.send(command, signal ? { abortSignal: signal } : undefined);
+
+export const getAllBuckets = async ({ signal } = {}) => {
+  const response = await sendCommand(s3Client, new ListBucketsCommand({}), signal);
   const buckets = response.Buckets || [];
 
   const bucketsWithPublicAccessBlock = await Promise.all(
     buckets.map(async (bucket) => {
       try {
-        const publicAccessBlock = await s3Client.send(
-          new GetPublicAccessBlockCommand({ Bucket: bucket.Name })
+        const publicAccessBlock = await sendCommand(
+          s3Client,
+          new GetPublicAccessBlockCommand({ Bucket: bucket.Name }),
+          signal
         );
-
         return {
           ...bucket,
           PublicAccessBlock: publicAccessBlock.PublicAccessBlockConfiguration,
         };
       } catch (error) {
+        if (signal?.aborted) throw error;
+
         const isMissingPublicAccessBlock =
           error?.name === "NoSuchPublicAccessBlockConfiguration" ||
           error?.$metadata?.httpStatusCode === 404;
 
-        if (!isMissingPublicAccessBlock) {
-          console.warn(`Cannot read S3 public access block for ${bucket.Name}:`, error.message);
-        }
+        if (!isMissingPublicAccessBlock) throw error;
 
         return {
           ...bucket,
           PublicAccessBlock: null,
-          PublicAccessBlockError: error.message,
         };
       }
     })
   );
 
-  return {
-    ...response,
-    Buckets: bucketsWithPublicAccessBlock,
-  };
+  return { ...response, Buckets: bucketsWithPublicAccessBlock };
 };
 
-export const applyPublicAccessBlock = async (bucketName) => {
-  return s3Client.send(
+export const applyPublicAccessBlock = async (bucketName, { signal } = {}) =>
+  sendCommand(
+    s3Client,
     new PutPublicAccessBlockCommand({
       Bucket: bucketName,
       PublicAccessBlockConfiguration: {
@@ -87,82 +82,74 @@ export const applyPublicAccessBlock = async (bucketName) => {
         BlockPublicPolicy: true,
         RestrictPublicBuckets: true,
       },
+    }),
+    signal
+  );
+
+export const scanEC2SecurityGroups = async ({ signal } = {}) => {
+  const response = await sendCommand(ec2Client, new DescribeSecurityGroupsCommand({}), signal);
+  const securityGroups = response.SecurityGroups || [];
+
+  return securityGroups
+    .filter((securityGroup) => securityGroup.GroupName !== "default")
+    .map((securityGroup) => {
+      const riskyRule = securityGroup.IpPermissions?.find((rule) => {
+        const opensSsh = rule.FromPort === 22 && rule.ToPort === 22;
+        const opensAllTraffic = rule.IpProtocol === "-1";
+        const openToWorld =
+          rule.IpRanges?.some((range) => range.CidrIp === "0.0.0.0/0") ||
+          rule.Ipv6Ranges?.some((range) => range.CidrIpv6 === "::/0");
+
+        return openToWorld && (opensSsh || opensAllTraffic);
+      });
+
+      const isViolating = Boolean(riskyRule);
+      return {
+        resourceId: `ec2:${securityGroup.GroupId}`,
+        resourceName: securityGroup.GroupName,
+        resourceType: "EC2",
+        isViolating,
+        status: isViolating ? "Nguy hiem" : "An toan",
+        reason: isViolating
+          ? "Security Group mo SSH hoac toan bo traffic ra Internet."
+          : "Cau hinh mang an toan.",
+        rawCloudConfig: securityGroup,
+      };
+    });
+};
+
+export const scanIAMUsers = async ({ signal } = {}) => {
+  const users = [];
+  let marker;
+
+  do {
+    const response = await sendCommand(
+      iamClient,
+      new ListUsersCommand(marker ? { Marker: marker } : {}),
+      signal
+    );
+    users.push(...(response.Users || []));
+    marker = response.IsTruncated ? response.Marker : undefined;
+  } while (marker);
+
+  return Promise.all(
+    users.map(async (user) => {
+      const mfaResponse = await sendCommand(
+        iamClient,
+        new ListMFADevicesCommand({ UserName: user.UserName }),
+        signal
+      );
+      const hasMfa = (mfaResponse.MFADevices || []).length > 0;
+
+      return {
+        resourceId: `iam:${user.UserId}`,
+        resourceName: user.UserName,
+        resourceType: "IAM",
+        isViolating: !hasMfa,
+        status: hasMfa ? "An toan" : "Canh bao",
+        reason: hasMfa ? "IAM user da bat MFA." : "IAM user chua bat MFA.",
+        rawCloudConfig: user,
+      };
     })
   );
-};
-
-export const scanEC2SecurityGroups = async () => {
-  try {
-    const response = await ec2Client.send(new DescribeSecurityGroupsCommand({}));
-    const securityGroups = response.SecurityGroups || [];
-
-    return securityGroups
-      .filter((sg) => sg.GroupName !== "default")
-      .map((sg) => {
-        const riskyRule = sg.IpPermissions?.find((rule) => {
-          const opensSsh = rule.FromPort === 22 && rule.ToPort === 22;
-          const opensAllTraffic = rule.IpProtocol === "-1";
-          const openToWorld =
-            rule.IpRanges?.some((range) => range.CidrIp === "0.0.0.0/0") ||
-            rule.Ipv6Ranges?.some((range) => range.CidrIpv6 === "::/0");
-
-          return openToWorld && (opensSsh || opensAllTraffic);
-        });
-
-        const isViolating = Boolean(riskyRule);
-
-        return {
-          resourceId: sg.GroupId,
-          resourceName: sg.GroupName,
-          resourceType: "EC2_SecurityGroup",
-          isViolating,
-          status: isViolating ? "Nguy hiểm" : "An toàn",
-          reason: isViolating
-            ? "Security Group đang mở SSH hoặc toàn bộ traffic ra Internet."
-            : "Cấu hình mạng an toàn.",
-        };
-      });
-  } catch (error) {
-    console.error("Lỗi khi quét EC2 Security Groups:", error);
-    return [];
-  }
-};
-
-export const scanIAMUsers = async () => {
-  try {
-    const users = [];
-    let marker;
-
-    do {
-      const response = await iamClient.send(
-        new ListUsersCommand(marker ? { Marker: marker } : {})
-      );
-
-      users.push(...(response.Users || []));
-      marker = response.IsTruncated ? response.Marker : undefined;
-    } while (marker);
-
-    return Promise.all(
-      users.map(async (user) => {
-        const mfaResponse = await iamClient.send(
-          new ListMFADevicesCommand({ UserName: user.UserName })
-        );
-        const hasMfa = (mfaResponse.MFADevices || []).length > 0;
-
-        return {
-          resourceId: user.UserId,
-          resourceName: user.UserName,
-          resourceType: "IAM_User",
-          isViolating: !hasMfa,
-          status: hasMfa ? "An toàn" : "Cảnh báo",
-          reason: hasMfa
-            ? "IAM user đã bật MFA."
-            : "IAM user chưa bật MFA.",
-        };
-      })
-    );
-  } catch (error) {
-    console.error("Lỗi khi quét IAM Users:", error);
-    return [];
-  }
 };

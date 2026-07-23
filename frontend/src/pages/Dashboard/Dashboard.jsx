@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import DashboardHeader from "../../components/DashboardHeader";
 import AuditLogs from "../../components/AuditLog";
-import axiosClient from "../../api/axiosClient";
+import axiosClient, { API_BASE_URL } from "../../api/axiosClient";
+import { io } from "socket.io-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { 
   AlertCircle, 
@@ -22,6 +23,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [selectedScan, setSelectedScan] = useState(null);
+  const [scanRuns, setScanRuns] = useState([]);
   const [activeTab, setActiveTab] = useState('scans'); // 'scans' hoặc 'audit-logs'
 
   // --- PHẦN THÊM MỚI 1: State để quản lý lúc đang vá lỗi ---
@@ -39,24 +41,70 @@ const Dashboard = () => {
     }
   };
 
+  const fetchScanRuns = async () => {
+    try {
+      const response = await axiosClient.get('/scans/runs');
+      setScanRuns(Array.isArray(response?.data?.data) ? response.data.data : []);
+    } catch (error) {
+      console.error('Could not load scan runs:', error);
+      setScanRuns([]);
+    }
+  };
+
   useEffect(() => {
     fetchScans();
+    fetchScanRuns();
+
+    const socketBaseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+    const socket = io(socketBaseUrl, { reconnection: true });
+    socket.on('connect', () => socket.emit('subscribe_scan_runs'));
+    socket.on('scan.status.changed', (scanRun) => {
+      setScanRuns((current) => {
+        const index = current.findIndex((item) => item.scanId === scanRun.scanId);
+        if (index === -1) return [scanRun, ...current];
+        return current.map((item) => (item.scanId === scanRun.scanId ? { ...item, ...scanRun } : item));
+      });
+    });
+
+    return () => {
+      socket.emit('unsubscribe_scan_runs');
+      socket.disconnect();
+    };
   }, []);
 
   const handleRunScan = async () => {
     setIsScanning(true);
     try {
-      const response = await axiosClient.post('/scans/scan');
-      await fetchScans();
-      alert(response?.data?.message || 'Đã gửi yêu cầu rà quét tới backend thành công.');
+      const idempotencyKey = "scan-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+      const response = await axiosClient.post(
+        '/scans/scan',
+        {},
+        { headers: { 'Idempotency-Key': idempotencyKey } }
+      );
+      const scanRun = response?.data?.data;
+      if (scanRun) {
+        setScanRuns((current) => [scanRun, ...current.filter((item) => item.scanId !== scanRun.scanId)]);
+      }
+      alert("Cloud scan " + (scanRun ? scanRun.scanId : "") + " has been queued.");
     } catch (error) {
-      console.error("Lỗi khi rà quét:", error);
-      alert("Có lỗi xảy ra khi rà quét máy chủ AWS: " + (error.response?.data?.message || error.message));
+      console.error('Could not queue cloud scan:', error);
+      alert(error.response?.data?.message || 'Could not queue cloud scan.');
     } finally {
       setIsScanning(false);
     }
   };
 
+  const handleCancelScan = async (scanId) => {
+    try {
+      const response = await axiosClient.post(`/scans/runs/${scanId}/cancel`);
+      const scanRun = response?.data?.data;
+      if (scanRun) {
+        setScanRuns((current) => current.map((item) => (item.scanId === scanId ? scanRun : item)));
+      }
+    } catch (error) {
+      alert(error.response?.data?.message || 'Could not cancel scan.');
+    }
+  };
   // --- PHẦN THÊM MỚI 2: Hàm xử lý vá lỗi khi bấm nút ---
   const handleAutoFix = async () => {
     if (!selectedScan) return;
@@ -79,6 +127,23 @@ const Dashboard = () => {
     }
   };
 
+  const statusLabel = (status) => ({
+    queued: 'Queued',
+    running: 'Running',
+    cancelling: 'Cancelling',
+    cancelled: 'Cancelled',
+    completed: 'Completed',
+    failed: 'Failed',
+  }[status] || status);
+
+  const statusClass = (status) => ({
+    queued: 'bg-amber-900/50 text-amber-300 border-amber-700/50',
+    running: 'bg-blue-900/50 text-blue-300 border-blue-700/50',
+    cancelling: 'bg-orange-900/50 text-orange-300 border-orange-700/50',
+    cancelled: 'bg-slate-800 text-slate-300 border-slate-600',
+    completed: 'bg-emerald-900/50 text-emerald-300 border-emerald-700/50',
+    failed: 'bg-red-900/50 text-red-300 border-red-700/50',
+  }[status] || 'bg-slate-800 text-slate-300 border-slate-600');
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 relative overflow-hidden">
       <DashboardHeader />
@@ -114,7 +179,47 @@ const Dashboard = () => {
         </div>
 
         {/* SCANS TAB CONTENT */}
-        {activeTab === 'scans' && (
+                {activeTab === 'scans' && (
+          <div className="space-y-6">
+            <Card className="border border-slate-700 bg-slate-900 text-slate-300 shadow-2xl rounded-2xl overflow-hidden">
+              <CardHeader className="border-b border-slate-700 bg-slate-800/80 px-6 py-5">
+                <CardTitle className="text-lg font-semibold text-white">Async scan status</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm text-left">
+                    <thead className="text-xs text-slate-400 uppercase bg-slate-950 border-b border-slate-700">
+                      <tr>
+                        <th className="px-6 py-3">Scan ID</th>
+                        <th className="px-6 py-3">Status</th>
+                        <th className="px-6 py-3">Attempt</th>
+                        <th className="px-6 py-3">Progress</th>
+                        <th className="px-6 py-3">Error</th>
+                        <th className="px-6 py-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {scanRuns.length === 0 ? (
+                        <tr><td colSpan="6" className="px-6 py-6 text-slate-500">No asynchronous scans yet.</td></tr>
+                      ) : scanRuns.map((scanRun) => (
+                        <tr key={scanRun.scanId} className="hover:bg-slate-800/60">
+                          <td className="px-6 py-4 font-mono text-xs text-slate-300">{scanRun.scanId}</td>
+                          <td className="px-6 py-4"><span className={`border px-2 py-1 rounded text-xs font-semibold ${statusClass(scanRun.status)}`}>{statusLabel(scanRun.status)}</span></td>
+                          <td className="px-6 py-4 text-slate-400">{scanRun.attempt}/{scanRun.maxAttempts}</td>
+                          <td className="px-6 py-4 text-slate-400">{scanRun.progress?.stage || 'queued'} ({scanRun.progress?.processed || 0}/{scanRun.progress?.total || 0})</td>
+                          <td className="px-6 py-4 text-red-300 max-w-xs truncate">{scanRun.error?.message || scanRun.errorMessage || '-'}</td>
+                          <td className="px-6 py-4 text-right">
+                            {['queued', 'running', 'cancelling'].includes(scanRun.status) && (
+                              <button onClick={() => handleCancelScan(scanRun.scanId)} className="text-xs px-3 py-1 rounded bg-red-900/60 hover:bg-red-800 text-red-200">Cancel</button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
         <Card className="border border-slate-700 bg-slate-900 text-slate-300 shadow-2xl rounded-2xl overflow-hidden ring-1 ring-white/5">
           <CardHeader className="border-b border-slate-700 bg-slate-800/80 px-6 py-5 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-lg font-semibold text-white">Lịch sử rà quét gần đây</CardTitle>
@@ -185,6 +290,7 @@ const Dashboard = () => {
             )}
           </CardContent>
         </Card>
+          </div>
         )}
 
         {/* AUDIT LOGS TAB CONTENT */}

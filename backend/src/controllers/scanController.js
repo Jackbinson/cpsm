@@ -1,163 +1,193 @@
-import * as awsService from '../services/awsService.js';
-import * as rulesService from '../services/ruleEngine.js';
-import { sendDiscordAlert } from '../services/discordService.js';
-import ScanResult from '../models/ScanResult.js';
-import AuditLog from '../models/AuditLog.js';
+import AuditLog from "../models/AuditLog.js";
+import ScanResult from "../models/ScanResult.js";
+import ScanRun from "../models/ScanRun.js";
+import * as awsService from "../services/awsService.js";
+import {
+  IdempotencyConflictError,
+  QueueUnavailableError,
+  enqueueScan,
+  requestScanCancellation,
+} from "../services/scanJobService.js";
 
-// 🔗 HÀM PHÁT SỰ KIỆN VIA SOCKET.IO
-const emitAuditLog = (app, auditLog) => {
-  const io = app.get('io');
-  if (io) {
-    io.to('audit_logs_room').emit('new_audit_log', auditLog);
-    console.log(`📡 Phát sóng Audit Log: ${auditLog.action}`);
+const scanRunResponse = (scanRun) => ({
+  scanId: scanRun.scanId,
+  status: scanRun.status,
+  attempt: scanRun.attempt,
+  maxAttempts: scanRun.maxAttempts,
+  progress: scanRun.progress,
+  summary: scanRun.summary,
+  nextRetryAt: scanRun.nextRetryAt,
+  error: scanRun.error?.message
+    ? { code: scanRun.error.code, message: scanRun.error.message }
+    : null,
+  cancelRequestedAt: scanRun.cancelRequestedAt,
+  createdAt: scanRun.createdAt,
+  startedAt: scanRun.startedAt,
+  finishedAt: scanRun.finishedAt,
+  updatedAt: scanRun.updatedAt,
+});
+
+const emitAuditLog = (req, auditLog) => {
+  const io = req.app?.get("io");
+  if (io) io.to("audit_logs_room").emit("new_audit_log", auditLog);
+};
+
+export const createScan = async (req, res) => {
+  const idempotencyKey = req.get("Idempotency-Key");
+  if (!idempotencyKey) {
+    return res.status(400).json({
+      success: false,
+      message: "Idempotency-Key header is required.",
+    });
+  }
+
+  try {
+    const createdBy = req.user?._id || null;
+    const idempotencyScope = createdBy ? `user:${createdBy}` : "anonymous";
+    const { scanRun, created } = await enqueueScan({
+      idempotencyKey,
+      idempotencyScope,
+      createdBy,
+      requestPayload: req.body || {},
+    });
+
+    return res
+      .status(202)
+      .location(`/api/v1/scans/runs/${scanRun.scanId}`)
+      .json({
+        success: true,
+        message: created ? "Cloud scan queued." : "Existing cloud scan returned.",
+        data: scanRunResponse(scanRun),
+      });
+  } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return res.status(409).json({ success: false, message: error.message });
+    }
+    if (error instanceof QueueUnavailableError) {
+      return res.status(503).json({ success: false, message: error.message });
+    }
+
+    console.error("[Scan API] Failed to create scan:", error);
+    return res.status(500).json({ success: false, message: "Could not queue cloud scan." });
   }
 };
 
-// ==========================================
-// 1. HÀM CHẠY RÀ QUÉT (runCloudScan)
-// ==========================================
-export const runCloudScan = async (req, res) => {
+export const listScanRuns = async (req, res) => {
   try {
-    const startTime = Date.now();
-    const savedScans = [];
+    const requestedStatuses = String(req.query.status || "")
+      .split(",")
+      .map((status) => status.trim())
+      .filter(Boolean);
+    const validStatuses = new Set(["queued", "running", "cancelling", "cancelled", "completed", "failed"]);
+    const statuses = requestedStatuses.filter((status) => validStatuses.has(status));
+    const query = statuses.length ? { status: { $in: statuses } } : {};
 
-    // --- PHẦN 1: QUÉT S3 BUCKETS ---
-    const data = await awsService.getAllBuckets();
-    const buckets = data.Buckets || [];
-
-    for (const bucket of buckets) {
-      const compliance = rulesService.checkS3Compliance(bucket);
-      const newScan = new ScanResult({
-        resourceName: bucket.Name,
-        resourceType: 'AWS S3',
-        isViolating: compliance.isViolating, 
-        status: compliance.status,
-      });
-      await newScan.save();
-      savedScans.push(newScan);
-
-      if (newScan.isViolating) {
-        await sendDiscordAlert(newScan.resourceName, newScan.status, "S3 Bucket đang mở Public!", newScan._id.toString());
-      }
-    }
-
-    // --- PHẦN 2: QUÉT EC2 SECURITY GROUPS ---
-    const ec2Results = await awsService.scanEC2SecurityGroups();
-    for (const result of ec2Results) {
-      const newScan = new ScanResult(result);
-      await newScan.save();
-      savedScans.push(newScan);
-      if (newScan.isViolating) await sendDiscordAlert(newScan.resourceName, newScan.status, result.reason, 'none');
-    }
-
-    // --- PHẦN 3: QUÉT IAM USERS ---
-    const iamResults = await awsService.scanIAMUsers();
-    for (const result of iamResults) {
-      const newScan = new ScanResult(result);
-      await newScan.save();
-      savedScans.push(newScan);
-      if (newScan.isViolating) await sendDiscordAlert(newScan.resourceName, newScan.status, result.reason, 'none');
-    }
-
-    // 🌟 GHI NHẬT KÝ KIỂM TOÁN: RÀ QUÉT
-    const executionTime = Date.now() - startTime;
-    const violationCount = savedScans.filter(s => s.isViolating).length;
-    
-    const auditLog = await AuditLog.create({
-      action: 'RÀ QUÉT TOÀN DIỆN',
-      actor: 'Hệ thống Backend',
-      resourceType: 'S3',
-      targetResource: 'S3, EC2, IAM',
-      status: 'Thành công',
-      details: `Đã quét ${buckets.length} S3, ${ec2Results.length} EC2, ${iamResults.length} IAM. Phát hiện ${violationCount} lỗi.`,
-      itemsProcessed: savedScans.length,
-      itemsViolated: violationCount,
-      executionTime
-    });
-
-    // 📡 PHÁT SỰ KIỆN VIA SOCKET.IO
-    emitAuditLog(req.app, auditLog);
-
-    return res.status(200).json({ 
-      success: true, 
-      message: `Quét thành công! Tìm thấy ${violationCount} lỗi.`,
-      data: savedScans,
-      auditLog
+    const scanRuns = await ScanRun.find(query).sort({ createdAt: -1 }).limit(100);
+    return res.status(200).json({
+      success: true,
+      data: scanRuns.map(scanRunResponse),
     });
   } catch (error) {
-    console.error("Lỗi khi chạy rà quét:", error);
-    const errorLog = await AuditLog.create({ 
-      action: 'RÀ QUÉT TOÀN DIỆN', 
-      actor: 'Hệ thống Backend', 
-      status: 'Thất bại', 
-      details: error.message,
-      errorMessage: error.stack
-    });
-    emitAuditLog(req.app, errorLog);
-    return res.status(500).json({ success: false, message: "Lỗi rà quét AWS" });
+    console.error("[Scan API] Failed to list scan runs:", error);
+    return res.status(500).json({ success: false, message: "Could not load scan runs." });
   }
 };
 
-// ==========================================
-// 2. HÀM TỰ ĐỘNG VÁ LỖI (fixCloudResource)
-// ==========================================
-export const fixCloudResource = async (req, res) => {
+export const getScanRun = async (req, res) => {
   try {
-    const resourceId = req.params.id;
-    const scan = await ScanResult.findById(resourceId);
-    
-    if (!scan) return res.status(404).json({ success: false, message: "Không tìm thấy." });
-    if (!scan.isViolating) return res.status(400).json({ success: false, message: "Đã an toàn." });
-
-    if (scan.resourceType === 'AWS S3' || scan.resourceType === 'S3') {
-      const startTime = Date.now();
-      await awsService.applyPublicAccessBlock(scan.resourceName);
-
-      scan.isViolating = false;
-      scan.status = 'An toàn';
-      await scan.save();
-
-      const auditLog = await AuditLog.create({
-        action: 'TỰ ĐỘNG VÁ LỖI (AUTO-FIX)',
-        actor: 'Discord Bot',
-        resourceType: 'S3',
-        targetResource: `S3: ${scan.resourceName}`,
-        status: 'Thành công',
-        details: 'Đã khóa quyền truy cập Public (Block Public Access).',
-        itemsFixed: 1,
-        executionTime: Date.now() - startTime
-      });
-
-      // 📡 PHÁT SỰ KIỆN VIA SOCKET.IO
-      emitAuditLog(req.app, auditLog);
-
-      return res.status(200).json({ success: true, message: "Vá lỗi S3 thành công.", data: scan, auditLog });
+    const scanRun = await ScanRun.findOne({ scanId: req.params.scanId });
+    if (!scanRun) {
+      return res.status(404).json({ success: false, message: "Scan run not found." });
     }
-    
-    return res.status(400).json({ success: false, message: "Chưa hỗ trợ vá lỗi tài nguyên này." });
+    return res.status(200).json({ success: true, data: scanRunResponse(scanRun) });
   } catch (error) {
-    console.error("Lỗi khi vá lỗi:", error);
-    return res.status(500).json({ success: false, message: "Lỗi máy chủ khi vá tài nguyên." });
+    return res.status(500).json({ success: false, message: "Could not load scan run." });
   }
 };
 
-// ==========================================
-// 3. CÁC HÀM TRẢ DỮ LIỆU VỀ CHO FRONTEND
-// ==========================================
+export const cancelScan = async (req, res) => {
+  try {
+    const scanRun = await ScanRun.findOne({ scanId: req.params.scanId });
+    if (!scanRun) {
+      return res.status(404).json({ success: false, message: "Scan run not found." });
+    }
+
+    const result = await requestScanCancellation(scanRun);
+    if (result.alreadyTerminal) {
+      return res.status(409).json({
+        success: false,
+        message: `Scan is already ${result.scanRun.status}.`,
+        data: scanRunResponse(result.scanRun),
+      });
+    }
+
+    return res.status(result.cancellationPending ? 202 : 200).json({
+      success: true,
+      message: result.cancellationPending ? "Cancellation requested." : "Scan cancelled.",
+      data: scanRunResponse(result.scanRun),
+    });
+  } catch (error) {
+    console.error("[Scan API] Failed to cancel scan:", error);
+    return res.status(500).json({ success: false, message: "Could not cancel scan." });
+  }
+};
+
 export const getScan = async (req, res) => {
   try {
-    const scans = await ScanResult.find().sort({ createdAt: -1 });
+    const query = req.query.scanId ? { scanId: req.query.scanId } : {};
+    const scans = await ScanResult.find(query).sort({ createdAt: -1 });
     return res.status(200).json({ success: true, data: scans });
   } catch (error) {
-    return res.status(500).json({ success: false, message: "Lỗi dữ liệu" });
+    return res.status(500).json({ success: false, message: "Could not load scan results." });
   }
 };
 
-export const getAuditLogs = async (req, res) => {
+export const getAuditLogs = async (_req, res) => {
   try {
     const logs = await AuditLog.find().sort({ createdAt: -1 }).limit(50);
     return res.status(200).json({ success: true, data: logs });
   } catch (error) {
-    return res.status(500).json({ success: false, message: "Lỗi lấy nhật ký." });
+    return res.status(500).json({ success: false, message: "Could not load audit logs." });
+  }
+};
+
+export const fixCloudResource = async (req, res) => {
+  try {
+    const scan = await ScanResult.findById(req.params.id);
+    if (!scan) return res.status(404).json({ success: false, message: "Resource not found." });
+    if (!scan.isViolating) return res.status(400).json({ success: false, message: "Resource is already safe." });
+
+    if (!["S3", "AWS S3"].includes(scan.resourceType)) {
+      return res.status(400).json({ success: false, message: "Auto-fix is only available for S3." });
+    }
+
+    const startedAt = Date.now();
+    await awsService.applyPublicAccessBlock(scan.resourceName);
+    scan.isViolating = false;
+    scan.status = "An toan";
+    scan.reason = "Block Public Access enabled.";
+    await scan.save();
+
+    const auditLog = await AuditLog.create({
+      action: "TỰ ĐỘNG VÁ LỖI (AUTO-FIX)",
+      actor: "Hệ thống Backend",
+      resourceType: "S3",
+      targetResource: `S3: ${scan.resourceName}`,
+      status: "Thành công",
+      details: "Enabled S3 Block Public Access.",
+      itemsFixed: 1,
+      executionTime: Date.now() - startedAt,
+    });
+    emitAuditLog(req, auditLog);
+
+    return res.status(200).json({
+      success: true,
+      message: "S3 public access block enabled.",
+      data: scan,
+      auditLog,
+    });
+  } catch (error) {
+    console.error("[Scan API] Auto-fix failed:", error);
+    return res.status(500).json({ success: false, message: "Could not auto-fix resource." });
   }
 };
