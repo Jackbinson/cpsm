@@ -1,0 +1,40 @@
+"use client";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Check, Loader2, LogOut, Monitor, Moon, Save, Sun } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { signOut } from "@/lib/auth";
+import { getUserProfile, saveUserProfile, type ThemePreference, type UserProfile } from "@/lib/user-preferences";
+import { useTheme } from "@/components/providers/theme-provider";
+
+const profileSchema = z.object({
+  displayName: z.string().min(2, "Enter at least two characters."),
+  email: z.string().email("Enter a valid email address."),
+  timezone: z.string().min(1, "Select a timezone."),
+  language: z.enum(["en", "vi"]),
+  scanCompleted: z.boolean(),
+  scanFailed: z.boolean(),
+  criticalFinding: z.boolean(),
+  remediationUpdates: z.boolean(),
+});
+type ProfileForm = z.infer<typeof profileSchema>;
+
+const themeOptions: Array<{ value: ThemePreference; label: string; icon: typeof Sun; detail: string }> = [
+  { value: "light", label: "Light", icon: Sun, detail: "Use a bright workspace." },
+  { value: "dark", label: "Dark", icon: Moon, detail: "Use the default low-light console." },
+  { value: "system", label: "System", icon: Monitor, detail: "Follow your operating system." },
+];
+
+export function SettingsClient() {
+  const router = useRouter();
+  const { theme, resolvedTheme, setTheme } = useTheme();
+  const [saved, setSaved] = useState(false); const [signingOut, setSigningOut] = useState<"current" | "all" | null>(null);
+  const form = useForm<ProfileForm>({ resolver: zodResolver(profileSchema), defaultValues: { displayName: "", email: "", timezone: "Asia/Ho_Chi_Minh", language: "en", scanCompleted: true, scanFailed: true, criticalFinding: true, remediationUpdates: true } });
+  useEffect(() => { const profile = getUserProfile(); form.reset({ displayName: profile.displayName, email: profile.email, timezone: profile.timezone, language: profile.language, ...profile.notificationPreferences }); }, [form]);
+  const save = (values: ProfileForm) => { const current = getUserProfile(); const profile: UserProfile = { ...current, displayName: values.displayName, email: values.email, timezone: values.timezone, language: values.language, theme, notificationPreferences: { scanCompleted: values.scanCompleted, scanFailed: values.scanFailed, criticalFinding: values.criticalFinding, remediationUpdates: values.remediationUpdates } }; saveUserProfile(profile); setSaved(true); window.setTimeout(() => setSaved(false), 2500); };
+  const logout = async (allDevices = false) => { setSigningOut(allDevices ? "all" : "current"); await signOut(allDevices); router.replace("/login"); };
+  return <div className="mx-auto max-w-5xl space-y-7"><section><p className="text-sm font-medium text-sky-300">Workspace preferences</p><h1 className="mt-1 text-3xl font-bold text-white">Settings</h1><p className="mt-2 text-sm text-slate-400">Manage your profile, appearance, notifications and local session.</p></section><form onSubmit={form.handleSubmit(save)} className="space-y-6"><section id="profile" className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><div><h2 className="font-semibold text-white">Profile</h2><p className="mt-1 text-sm text-slate-400">Profile preferences are stored locally until the profile API is available.</p></div><div className="mt-5 grid gap-5 md:grid-cols-2"><label className="block text-sm font-medium text-slate-200">Full name<input {...form.register("displayName")} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-slate-100" />{form.formState.errors.displayName ? <p className="mt-1 text-xs text-rose-300">{form.formState.errors.displayName.message}</p> : null}</label><label className="block text-sm font-medium text-slate-200">Email<input type="email" {...form.register("email")} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-slate-100" />{form.formState.errors.email ? <p className="mt-1 text-xs text-rose-300">{form.formState.errors.email.message}</p> : null}</label><label className="block text-sm font-medium text-slate-200">Timezone<select {...form.register("timezone")} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-slate-100"><option value="Asia/Ho_Chi_Minh">Asia/Ho Chi Minh</option><option value="UTC">UTC</option><option value="America/Los_Angeles">America/Los Angeles</option></select></label><label className="block text-sm font-medium text-slate-200">Language<select {...form.register("language")} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-slate-100"><option value="en">English</option><option value="vi">Tiáº¿ng Viá»‡t</option></select></label></div></section><section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><h2 className="font-semibold text-white">Appearance</h2><p className="mt-1 text-sm text-slate-400">Active appearance: {resolvedTheme}.</p><div className="mt-4 grid gap-3 md:grid-cols-3">{themeOptions.map((option) => { const Icon = option.icon; const active = theme === option.value; return <button type="button" key={option.value} onClick={() => setTheme(option.value)} className={`rounded-xl border p-4 text-left transition ${active ? "border-sky-400/60 bg-sky-400/10" : "border-slate-800 bg-slate-950/60 hover:border-slate-600"}`}><Icon className="h-5 w-5 text-sky-200" /><p className="mt-3 font-semibold text-slate-100">{option.label}</p><p className="mt-1 text-xs leading-5 text-slate-400">{option.detail}</p>{active ? <span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-sky-200"><Check className="h-3.5 w-3.5" />Active</span> : null}</button>; })}</div></section><section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><h2 className="font-semibold text-white">Notification preferences</h2><p className="mt-1 text-sm text-slate-400">Choose which in-app events should reach your notification center.</p><div className="mt-4 grid gap-3 md:grid-cols-2">{([ ["scanCompleted", "Scan completed"], ["scanFailed", "Scan failed"], ["criticalFinding", "Critical finding detected"], ["remediationUpdates", "Remediation updates"] ] as const).map(([field, label]) => <label key={field} className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-200"><input type="checkbox" {...form.register(field)} className="h-4 w-4 accent-sky-400" />{label}</label>)}</div></section><div className="flex flex-wrap items-center justify-end gap-3">{saved ? <span role="status" className="text-sm text-emerald-200">Preferences saved.</span> : null}<button type="submit" disabled={form.formState.isSubmitting} className="inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-bold text-slate-950 hover:bg-sky-300 disabled:opacity-60">{form.formState.isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save preferences</button></div></form><section className="rounded-2xl border border-rose-400/25 bg-rose-950/20 p-5"><h2 className="font-semibold text-rose-100">Security</h2><p className="mt-1 text-sm text-rose-100/70">The browser receives only an HttpOnly session cookie. Signing out of all devices invalidates every existing session for this account.</p><div className="mt-4 flex flex-wrap gap-3"><button disabled={signingOut !== null} onClick={() => void logout()} className="inline-flex items-center gap-2 rounded-xl border border-rose-400/40 px-4 py-2.5 text-sm font-semibold text-rose-100 hover:bg-rose-500/10 disabled:opacity-60"><LogOut className="h-4 w-4" />{signingOut === "current" ? "Signing out…" : "Sign out"}</button><button disabled={signingOut !== null} onClick={() => void logout(true)} className="inline-flex items-center gap-2 rounded-xl bg-rose-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"><LogOut className="h-4 w-4" />{signingOut === "all" ? "Signing out…" : "Sign out all devices"}</button></div></section></div>;
+}

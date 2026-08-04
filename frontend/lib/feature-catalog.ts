@@ -1,0 +1,9 @@
+export interface FeatureDefinition { eyebrow: string; title: string; description: string; backendRequirement: string; }
+export const featureCatalog: Record<"remediation" | "policies" | "reports" | "notifications" | "team" | "settings", FeatureDefinition> = {
+  remediation: { eyebrow: "Controlled remediation", title: "Remediation workflow", description: "Review proposed infrastructure changes, approval state and verification results before a production change is applied.", backendRequirement: "Remediation proposal, approval, execution and rollback endpoints are not available yet." },
+  policies: { eyebrow: "Policy management", title: "Policies", description: "Manage versioned security policies and understand the findings each policy generates.", backendRequirement: "Policy CRUD, test and import/export endpoints are not available yet." },
+  reports: { eyebrow: "Security reporting", title: "Reports", description: "Generate executive, compliance and findings reports without blocking the web request.", backendRequirement: "Report job and download endpoints are not available yet." },
+  notifications: { eyebrow: "Notification center", title: "Notifications", description: "Review scan, finding and remediation notifications with deep links to the affected object.", backendRequirement: "Persisted notification and preference endpoints are not available yet." },
+  team: { eyebrow: "RBAC", title: "Team & roles", description: "Manage Viewer, Analyst, Approver and Admin access. The backend must enforce every permission independently.", backendRequirement: "Team membership and role management endpoints are not available yet." },
+  settings: { eyebrow: "Workspace preferences", title: "Settings", description: "Configure profile, theme, locale and notification defaults.", backendRequirement: "Profile, session and preference endpoints are not available yet." },
+};

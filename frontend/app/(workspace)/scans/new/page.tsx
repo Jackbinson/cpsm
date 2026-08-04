@@ -1,0 +1,2 @@
+import { ScanForm } from "@/components/scans/scan-form";
+export default function NewScanPage() { return <div className="mx-auto max-w-4xl"><p className="text-sm font-medium text-sky-300">Create scan</p><h1 className="mt-1 text-3xl font-bold text-white">Start a cloud security scan</h1><p className="mt-2 text-sm text-slate-400">The API returns immediately with a scan ID. A dedicated worker performs the AWS scan asynchronously.</p><div className="mt-7"><ScanForm /></div></div>; }

@@ -9,61 +9,108 @@ import {
   createRedisConnection,
 } from "./queues.js";
 import { processScanJob } from "./scanProcessor.js";
-
-await connectDB();
-await configureScanQueue();
+import { logger } from "../services/structuredLogger.js";
 
 const activeControllers = new Map();
-const controlSubscriber = createRedisConnection();
-await controlSubscriber.subscribe(SCAN_CONTROL_CHANNEL);
+let worker;
+let controlSubscriber;
+let shuttingDown = false;
 
-controlSubscriber.on("message", (_channel, rawMessage) => {
+const shutdown = async (signal, exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info("worker.shutting_down", { signal });
+
   try {
-    const event = JSON.parse(rawMessage);
-    if (event.type !== "cancel") return;
-
-    const controller = activeControllers.get(event.scanId);
-    if (controller && !controller.signal.aborted) {
-      controller.abort(new Error("Cancellation requested by user."));
-    }
+    await worker?.close();
+    await controlSubscriber?.quit();
+    await closeQueues();
+    logger.info("worker.stopped", { signal });
   } catch (error) {
-    console.error("[Worker] Invalid control message:", error.message);
+    logger.error("worker.shutdown_failed", { signal, error });
+    exitCode = 1;
   }
-});
 
-const worker = new Worker(
-  SCAN_QUEUE_NAME,
-  (job, _token, signal) =>
-    processScanJob(job, {
-      signal,
-      registerController: (scanId, controller) => activeControllers.set(scanId, controller),
-      unregisterController: (scanId) => activeControllers.delete(scanId),
-    }),
-  {
-    connection: createRedisConnection(),
-    concurrency: Number(process.env.SCAN_CONCURRENCY || 2),
-  }
-);
+  process.exit(exitCode);
+};
 
-worker.on("completed", (job, result) => {
-  console.log(`[Worker] ${job.id} completed: ${result.status}`);
-});
+const startWorker = async () => {
+  logger.info("worker.starting", { concurrency: Number(process.env.SCAN_CONCURRENCY || 2) });
+  await connectDB();
+  await configureScanQueue();
 
-worker.on("failed", (job, error) => {
-  console.error(`[Worker] ${job?.id || "unknown"} failed:`, error.message);
-});
+  controlSubscriber = createRedisConnection("scan-control-subscriber");
+  await controlSubscriber.subscribe(SCAN_CONTROL_CHANNEL);
+  logger.info("worker.control_channel_subscribed", { channel: SCAN_CONTROL_CHANNEL });
 
-worker.on("error", (error) => {
-  console.error("[Worker] Queue error:", error.message);
-});
+  controlSubscriber.on("message", (_channel, rawMessage) => {
+    try {
+      const event = JSON.parse(rawMessage);
+      if (event.type !== "cancel") return;
 
-const shutdown = async (signal) => {
-  console.log(`[Worker] ${signal} received, shutting down.`);
-  await worker.close();
-  await controlSubscriber.quit();
-  await closeQueues();
-  process.exit(0);
+      const controller = activeControllers.get(event.scanId);
+      if (controller && !controller.signal.aborted) {
+        logger.info("scan.cancellation_received", { scanId: event.scanId });
+        controller.abort(new Error("Cancellation requested by user."));
+      }
+    } catch (error) {
+      logger.warn("worker.invalid_control_message", { error });
+    }
+  });
+
+  worker = new Worker(
+    SCAN_QUEUE_NAME,
+    (job, _token, signal) => {
+      logger.info("worker.job_started", {
+        jobId: job.id,
+        scanId: job.data?.scanId,
+        attempt: job.attemptsMade + 1,
+      });
+      return processScanJob(job, {
+        signal,
+        registerController: (scanId, controller) => activeControllers.set(scanId, controller),
+        unregisterController: (scanId) => activeControllers.delete(scanId),
+      });
+    },
+    {
+      connection: createRedisConnection("scan-worker"),
+      concurrency: Number(process.env.SCAN_CONCURRENCY || 2),
+    }
+  );
+
+  worker.on("completed", (job, result) => {
+    logger.info("worker.job_completed", {
+      jobId: job.id,
+      scanId: job.data?.scanId,
+      status: result?.status,
+      attemptsMade: job.attemptsMade,
+      summary: result?.summary,
+    });
+  });
+
+  worker.on("failed", (job, error) => {
+    logger.error("worker.job_failed", {
+      jobId: job?.id || "unknown",
+      scanId: job?.data?.scanId,
+      attemptsMade: job?.attemptsMade,
+      retryExpected: Boolean(job && job.attemptsMade < (job.opts.attempts || 1)),
+      error,
+    });
+  });
+
+  worker.on("error", (error) => logger.error("worker.queue_error", { error }));
+  logger.info("worker.started", { queue: SCAN_QUEUE_NAME });
 };
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("unhandledRejection", (error) => logger.error("process.unhandled_rejection", { component: "worker", error }));
+process.on("uncaughtException", (error) => {
+  logger.error("process.uncaught_exception", { component: "worker", error });
+  shutdown("uncaughtException", 1);
+});
+
+startWorker().catch((error) => {
+  logger.error("worker.start_failed", { error });
+  shutdown("startup_failure", 1);
+});

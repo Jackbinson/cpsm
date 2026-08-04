@@ -40,6 +40,9 @@ services:
       MONGO_URI: mongodb://mongodb:27017/cspm_project
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://127.0.0.1:3001,http://localhost:3001}
       DISCORD_TOKEN: ${DISCORD_TOKEN:-}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID:-}
       DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
@@ -70,6 +73,7 @@ services:
     environment:
       <<: *cspm_environment
       DISCORD_ENABLED: "false"
+      LOG_SERVICE_NAME: ${WORKER_LOG_SERVICE_NAME:-cpsm-worker}
 
 volumes:
   mongo_data:

@@ -1,0 +1,8 @@
+import { apiRequest } from "@/lib/api/client";
+import type { Finding, Severity } from "@/types/cspm";
+
+interface ScanResultApi { _id: string; scanId?: string; resourceId?: string; resourceName: string; resourceType: string; isViolating: boolean; severity?: string; status?: string; reason?: string; rawCloudConfig?: Record<string, unknown>; createdAt: string; updatedAt: string; }
+const severityFrom = (value?: string): Severity => { const normalized = value?.toLowerCase(); return normalized === "critical" || normalized === "high" || normalized === "medium" || normalized === "low" ? normalized : "informational"; };
+export async function listFindings(): Promise<Finding[]> { const results = await apiRequest<ScanResultApi[]>("/scans/scans"); return results.map((result) => ({ id: result._id, scanId: result.scanId, name: result.resourceName, description: result.reason || "No policy explanation was returned for this resource.", severity: result.isViolating ? severityFrom(result.severity || "high") : "informational", status: result.isViolating ? "open" : "resolved", service: result.resourceType, region: "Global", resourceArn: result.resourceId || result.resourceName, resourceType: result.resourceType, awsAccountId: "default-account", detectedAt: result.createdAt, lastSeenAt: result.updatedAt, isViolating: result.isViolating, rawCloudConfig: result.rawCloudConfig || {} })); }
+export async function getFinding(id: string): Promise<Finding | undefined> { const findings = await listFindings(); return findings.find((finding) => finding.id === id); }
+export const autoFixFinding = (id: string) => apiRequest<ScanResultApi>(`/scans/fix/${id}`, { method: "POST" });

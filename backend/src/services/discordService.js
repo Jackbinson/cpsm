@@ -1,5 +1,6 @@
 import { Client, EmbedBuilder, GatewayIntentBits, REST, Routes } from "discord.js";
 import { enqueueScan } from "./scanJobService.js";
+import { logger } from "./structuredLogger.js";
 
 const isDiscordEnabled =
   process.env.DISCORD_ENABLED !== "false" &&
@@ -15,12 +16,12 @@ if (isDiscordEnabled) {
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
   rest
     .put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID), { body: commands })
-    .then(() => console.log("[Discord] Slash command /scan registered."))
-    .catch((error) => console.error("[Discord] Command registration failed:", error.message));
+    .then(() => logger.info("discord.command_registered", { command: "scan" }))
+    .catch((error) => logger.error("discord.command_registration_failed", { error }));
 }
 
 client.once("clientReady", () => {
-  console.log(`[Discord] Bot online as: ${client.user.tag}`);
+  logger.info("discord.client_ready", { bot: client.user.tag });
   client.user.setActivity("CSPM cloud scans", { type: 3 });
 });
 
@@ -35,9 +36,10 @@ client.on("interactionCreate", async (interaction) => {
       requestPayload: { source: "discord" },
     });
     const message = created ? "Scan queued" : "Existing scan returned";
+    logger.info("discord.scan_requested", { interactionId: interaction.id, scanId: scanRun.scanId, created });
     await interaction.editReply(`${message}: ${scanRun.scanId}`);
   } catch (error) {
-    console.error("[Discord] Could not queue scan:", error);
+    logger.error("discord.scan_request_failed", { interactionId: interaction.id, error });
     await interaction.editReply("Could not queue the cloud scan.");
   }
 });
@@ -58,13 +60,14 @@ export const sendDiscordAlert = async (resourceName, status, reason) => {
       .setTimestamp()
       .setFooter({ text: "CSPM monitoring" });
     await channel.send({ embeds: [embed] });
+    logger.info("discord.alert_sent", { resourceName, status: status || "Critical" });
   } catch (error) {
-    console.error("[Discord] Send alert failed:", error.message);
+    logger.error("discord.alert_send_failed", { resourceName, error });
   }
 };
 
 if (isDiscordEnabled) {
   client.login(process.env.DISCORD_TOKEN).catch((error) => {
-    console.error("[Discord] Bot login failed:", error.message);
+    logger.error("discord.login_failed", { error });
   });
 }

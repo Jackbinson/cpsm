@@ -2,6 +2,7 @@ import AuditLog from "../models/AuditLog.js";
 import ScanResult from "../models/ScanResult.js";
 import ScanRun from "../models/ScanRun.js";
 import * as awsService from "../services/awsService.js";
+import { logger } from "../services/structuredLogger.js";
 import {
   IdempotencyConflictError,
   QueueUnavailableError,
@@ -32,6 +33,11 @@ const emitAuditLog = (req, auditLog) => {
   if (io) io.to("audit_logs_room").emit("new_audit_log", auditLog);
 };
 
+const canAccessAllScans = (req) => req.user?.role === "admin";
+
+const scanRunAccessFilter = (req, filter = {}) =>
+  canAccessAllScans(req) ? filter : { ...filter, createdBy: req.user._id };
+
 export const createScan = async (req, res) => {
   const idempotencyKey = req.get("Idempotency-Key");
   if (!idempotencyKey) {
@@ -51,6 +57,13 @@ export const createScan = async (req, res) => {
       requestPayload: req.body || {},
     });
 
+    logger.info("scan.request_accepted", {
+      requestId: req.requestId,
+      userId: createdBy?.toString(),
+      scanId: scanRun.scanId,
+      created,
+    });
+
     return res
       .status(202)
       .location(`/api/v1/scans/runs/${scanRun.scanId}`)
@@ -61,13 +74,15 @@ export const createScan = async (req, res) => {
       });
   } catch (error) {
     if (error instanceof IdempotencyConflictError) {
+      logger.warn("scan.idempotency_conflict", { requestId: req.requestId, userId: req.user?._id?.toString() });
       return res.status(409).json({ success: false, message: error.message });
     }
     if (error instanceof QueueUnavailableError) {
+      logger.warn("scan.queue_unavailable", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
       return res.status(503).json({ success: false, message: error.message });
     }
 
-    console.error("[Scan API] Failed to create scan:", error);
+    logger.error("scan.create_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
     return res.status(500).json({ success: false, message: "Could not queue cloud scan." });
   }
 };
@@ -80,7 +95,10 @@ export const listScanRuns = async (req, res) => {
       .filter(Boolean);
     const validStatuses = new Set(["queued", "running", "cancelling", "cancelled", "completed", "failed"]);
     const statuses = requestedStatuses.filter((status) => validStatuses.has(status));
-    const query = statuses.length ? { status: { $in: statuses } } : {};
+    const query = scanRunAccessFilter(
+      req,
+      statuses.length ? { status: { $in: statuses } } : {}
+    );
 
     const scanRuns = await ScanRun.find(query).sort({ createdAt: -1 }).limit(100);
     return res.status(200).json({
@@ -88,31 +106,43 @@ export const listScanRuns = async (req, res) => {
       data: scanRuns.map(scanRunResponse),
     });
   } catch (error) {
-    console.error("[Scan API] Failed to list scan runs:", error);
+    logger.error("scan.list_runs_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
     return res.status(500).json({ success: false, message: "Could not load scan runs." });
   }
 };
 
 export const getScanRun = async (req, res) => {
   try {
-    const scanRun = await ScanRun.findOne({ scanId: req.params.scanId });
+    const scanRun = await ScanRun.findOne(
+      scanRunAccessFilter(req, { scanId: req.params.scanId })
+    );
     if (!scanRun) {
       return res.status(404).json({ success: false, message: "Scan run not found." });
     }
     return res.status(200).json({ success: true, data: scanRunResponse(scanRun) });
   } catch (error) {
+    logger.error("scan.get_run_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), scanId: req.params.scanId, error });
     return res.status(500).json({ success: false, message: "Could not load scan run." });
   }
 };
 
 export const cancelScan = async (req, res) => {
   try {
-    const scanRun = await ScanRun.findOne({ scanId: req.params.scanId });
+    const scanRun = await ScanRun.findOne(
+      scanRunAccessFilter(req, { scanId: req.params.scanId })
+    );
     if (!scanRun) {
       return res.status(404).json({ success: false, message: "Scan run not found." });
     }
 
     const result = await requestScanCancellation(scanRun);
+    logger.info("scan.cancellation_requested", {
+      requestId: req.requestId,
+      userId: req.user?._id?.toString(),
+      scanId: scanRun.scanId,
+      cancellationPending: result.cancellationPending,
+      alreadyTerminal: result.alreadyTerminal,
+    });
     if (result.alreadyTerminal) {
       return res.status(409).json({
         success: false,
@@ -127,26 +157,43 @@ export const cancelScan = async (req, res) => {
       data: scanRunResponse(result.scanRun),
     });
   } catch (error) {
-    console.error("[Scan API] Failed to cancel scan:", error);
+    logger.error("scan.cancellation_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
     return res.status(500).json({ success: false, message: "Could not cancel scan." });
   }
 };
 
 export const getScan = async (req, res) => {
   try {
-    const query = req.query.scanId ? { scanId: req.query.scanId } : {};
+    const scanId = typeof req.query.scanId === "string" ? req.query.scanId : null;
+    const query = scanId ? { scanId } : {};
+
+    if (!canAccessAllScans(req)) {
+      const accessibleScanRuns = await ScanRun.find(
+        scanRunAccessFilter(req, scanId ? { scanId } : {})
+      )
+        .select("scanId")
+        .lean();
+      query.scanId = { $in: accessibleScanRuns.map((scanRun) => scanRun.scanId) };
+    }
+
     const scans = await ScanResult.find(query).sort({ createdAt: -1 });
     return res.status(200).json({ success: true, data: scans });
   } catch (error) {
+    logger.error("scan.get_results_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), scanId: req.query.scanId, error });
     return res.status(500).json({ success: false, message: "Could not load scan results." });
   }
 };
 
-export const getAuditLogs = async (_req, res) => {
+export const getAuditLogs = async (req, res) => {
+  if (!canAccessAllScans(req)) {
+    return res.status(403).json({ success: false, message: "Insufficient permissions." });
+  }
+
   try {
     const logs = await AuditLog.find().sort({ createdAt: -1 }).limit(50);
     return res.status(200).json({ success: true, data: logs });
   } catch (error) {
+    logger.error("scan.get_audit_logs_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
     return res.status(500).json({ success: false, message: "Could not load audit logs." });
   }
 };
@@ -179,6 +226,13 @@ export const fixCloudResource = async (req, res) => {
       executionTime: Date.now() - startedAt,
     });
     emitAuditLog(req, auditLog);
+    logger.info("scan.resource_fixed", {
+      requestId: req.requestId,
+      userId: req.user?._id?.toString(),
+      resourceId: scan._id.toString(),
+      resourceName: scan.resourceName,
+      executionTimeMs: Date.now() - startedAt,
+    });
 
     return res.status(200).json({
       success: true,
@@ -187,7 +241,7 @@ export const fixCloudResource = async (req, res) => {
       auditLog,
     });
   } catch (error) {
-    console.error("[Scan API] Auto-fix failed:", error);
+    logger.error("scan.resource_fix_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
     return res.status(500).json({ success: false, message: "Could not auto-fix resource." });
   }
 };

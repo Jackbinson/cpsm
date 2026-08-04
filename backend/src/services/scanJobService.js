@@ -6,6 +6,7 @@ import {
   scanQueue,
 } from "../jobs/queues.js";
 import { publishRealtimeEvent } from "./realtimeEvents.js";
+import { logger } from "./structuredLogger.js";
 
 const maxAttempts = Number(process.env.SCAN_MAX_ATTEMPTS || 4);
 const controlPublisher = createRedisConnection();
@@ -27,10 +28,12 @@ const stableSerialize = (value) => {
 
 export const toRealtimePayload = (scanRun) => ({
   scanId: scanRun.scanId,
+  createdBy: scanRun.createdBy?.toString() || null,
   status: scanRun.status,
   attempt: scanRun.attempt,
   maxAttempts: scanRun.maxAttempts,
   progress: scanRun.progress,
+  summary: scanRun.summary,
   nextRetryAt: scanRun.nextRetryAt,
   errorMessage: scanRun.error?.message || null,
   updatedAt: scanRun.updatedAt,
@@ -74,7 +77,12 @@ export const enqueueScan = async ({
     }
   }
 
-  if (!created) return { scanRun, created: false };
+  if (!created) {
+    logger.info("scan.enqueue_reused", { scanId: scanRun.scanId, createdBy: createdBy?.toString() });
+    return { scanRun, created: false };
+  }
+
+  logger.info("scan.enqueue_started", { scanId: scanRun.scanId, createdBy: createdBy?.toString() });
 
   try {
     const job = await scanQueue.add(
@@ -86,8 +94,10 @@ export const enqueueScan = async ({
     scanRun.queueJobId = job.id;
     await scanRun.save();
     await publishRealtimeEvent("scan.status.changed", toRealtimePayload(scanRun));
+    logger.info("scan.enqueued", { scanId: scanRun.scanId, queueJobId: job.id });
     return { scanRun, created: true };
   } catch (error) {
+    logger.error("scan.enqueue_failed", { scanId: scanRun.scanId, error });
     scanRun.status = "failed";
     scanRun.finishedAt = new Date();
     scanRun.error = {
@@ -103,6 +113,7 @@ export const enqueueScan = async ({
 
 export const requestScanCancellation = async (scanRun) => {
   if (["completed", "failed", "cancelled"].includes(scanRun.status)) {
+    logger.info("scan.cancellation_skipped", { scanId: scanRun.scanId, status: scanRun.status });
     return { scanRun, cancellationPending: false, alreadyTerminal: true };
   }
 
@@ -118,6 +129,7 @@ export const requestScanCancellation = async (scanRun) => {
     scanRun.nextRetryAt = null;
     await scanRun.save();
     await publishRealtimeEvent("scan.status.changed", toRealtimePayload(scanRun));
+    logger.info("scan.cancelled_before_start", { scanId: scanRun.scanId, jobState });
     return { scanRun, cancellationPending: false, alreadyTerminal: false };
   }
 
@@ -129,6 +141,7 @@ export const requestScanCancellation = async (scanRun) => {
     JSON.stringify({ type: "cancel", scanId: scanRun.scanId })
   );
   await publishRealtimeEvent("scan.status.changed", toRealtimePayload(scanRun));
+  logger.info("scan.cancellation_published", { scanId: scanRun.scanId, jobState });
 
   return { scanRun, cancellationPending: true, alreadyTerminal: false };
 };

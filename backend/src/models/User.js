@@ -1,35 +1,56 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const UserSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: [true, 'Vui lòng nhập tên người dùng'],
-    trim: true
+    required: [true, "Name is required"],
+    trim: true,
   },
   email: {
     type: String,
-    required: [true, 'Vui lòng nhập email'],
-    unique: true, // Không cho phép 2 người đăng ký trùng email
-    match: [
-      /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
-      'Vui lòng nhập một email hợp lệ'
-    ]
+    required: [true, "Email is required"],
+    unique: true,
+    trim: true,
+    lowercase: true,
+    match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,})+$/, "A valid email is required"],
   },
   password: {
     type: String,
-    required: [true, 'Vui lòng nhập mật khẩu'],
-    minlength: 6,
-    select: false // Cực kỳ quan trọng: Mặc định khi query User sẽ không trả về password để tránh lộ lọt
+    required: function passwordIsRequired() {
+      return !this.googleId;
+    },
+    minlength: 8,
+    select: false,
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
-    default: 'user'
-  }
+    enum: ["user", "admin"],
+    default: "user",
+  },
+  googleId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true,
+  },
+  avatarUrl: {
+    type: String,
+    trim: true,
+    default: "",
+  },
+  emailVerified: {
+    type: Boolean,
+    default: false,
+  },
+  sessionVersion: {
+    type: Number,
+    default: 0,
+    select: false,
+  },
 }, {
-  timestamps: true
+  timestamps: true,
 });
 
-const User = mongoose.model('User', UserSchema);
+const User = mongoose.model("User", UserSchema);
 
 export default User;

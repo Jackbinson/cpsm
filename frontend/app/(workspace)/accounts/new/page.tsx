@@ -1,0 +1,2 @@
+import { AccountForm } from "@/components/accounts/account-form";
+export default function NewAccountPage() { return <div className="mx-auto max-w-4xl"><p className="text-sm font-medium text-sky-300">AWS integration</p><h1 className="mt-1 text-3xl font-bold text-white">Add AWS account</h1><p className="mt-2 text-sm text-slate-400">Use an IAM AssumeRole ARN. Never enter access keys in the frontend.</p><div className="mt-7"><AccountForm /></div></div>; }

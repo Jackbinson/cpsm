@@ -1,0 +1,14 @@
+"use client";
+
+import Link from "next/link";
+import { CheckCheck, Inbox } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { getNotifications, markAllNotificationsRead, markNotificationRead, notificationsChangedEvent, type NotificationItem } from "@/services/notifications.service";
+
+export function NotificationsCenter() {
+  const [items, setItems] = useState<NotificationItem[]>([]);
+  const refresh = () => setItems(getNotifications());
+  useEffect(() => { refresh(); window.addEventListener(notificationsChangedEvent, refresh); return () => window.removeEventListener(notificationsChangedEvent, refresh); }, []);
+  const unread = useMemo(() => items.filter((item) => !item.read).length, [items]);
+  return <div className="mx-auto max-w-4xl space-y-6"><section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-medium text-sky-300">Notification center</p><h1 className="mt-1 text-3xl font-bold text-white">Notifications</h1><p className="mt-2 text-sm text-slate-400">{unread} unread notification{unread === 1 ? "" : "s"}. Scan and finding events appear here.</p></div><button onClick={markAllNotificationsRead} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800"><CheckCheck className="h-4 w-4" />Mark all read</button></section><section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70">{items.length ? <div className="divide-y divide-slate-800">{items.map((item) => <Link key={item.id} href={item.href} onClick={() => markNotificationRead(item.id)} className={`block px-5 py-4 hover:bg-slate-800/50 ${item.read ? "" : "bg-sky-400/5"}`}><div className="flex items-start justify-between gap-4"><div><p className="font-medium text-slate-100">{item.title}</p><p className="mt-1 text-sm text-slate-400">{item.message}</p></div>{item.read ? null : <span className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-sky-300" aria-label="Unread" />}</div><p className="mt-2 text-xs text-slate-500">{new Date(item.createdAt).toLocaleString()}</p></Link>)}</div> : <div className="flex min-h-52 flex-col items-center justify-center gap-3 p-8 text-center"><Inbox className="h-9 w-9 text-slate-500" /><h2 className="font-semibold text-slate-100">No notifications</h2><p className="text-sm text-slate-400">New scan and finding events will appear here.</p></div>}</section><p className="text-xs text-slate-500">Notification persistence is local until the backend notification API is available.</p></div>;
+}

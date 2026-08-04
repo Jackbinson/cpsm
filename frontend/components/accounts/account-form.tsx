@@ -1,0 +1,24 @@
+"use client";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Save } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { can, getBrowserRole } from "@/lib/auth";
+import { awsRegions } from "@/lib/scan-options";
+import { awsAccountSchema, type AwsAccountFormValues } from "@/lib/validation/aws-account";
+import { createAwsAccount } from "@/services/accounts.service";
+
+export function AccountForm() {
+  const router = useRouter();
+  const allowed = can(getBrowserRole(), "account:manage");
+  const client = useQueryClient();
+  const form = useForm<AwsAccountFormValues>({ resolver: zodResolver(awsAccountSchema), defaultValues: { name: "", accountId: "", roleArn: "", externalId: "", environment: "production", regions: ["ap-southeast-1"], scanSchedule: "Every day at 02:00" } });
+  const create = useMutation({ mutationFn: createAwsAccount, onSuccess: () => { void client.invalidateQueries({ queryKey: ["accounts"] }); router.push("/accounts"); } });
+  if (!allowed) return <div role="alert" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-100">Your role does not have permission to manage AWS accounts.</div>;
+  const regions = form.watch("regions");
+  const toggle = (region: string) => form.setValue("regions", regions.includes(region) ? regions.filter((item) => item !== region) : [...regions, region], { shouldValidate: true });
+  const field = (name: keyof AwsAccountFormValues, label: string, placeholder?: string, type = "text") => <label className="block text-sm font-medium text-slate-200">{label}<input type={type} placeholder={placeholder} {...form.register(name as "name" | "accountId" | "roleArn" | "externalId" | "scanSchedule")} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-slate-100 placeholder:text-slate-600" />{form.formState.errors[name]?.message ? <p className="mt-1 text-xs text-rose-300">{String(form.formState.errors[name]?.message)}</p> : null}</label>;
+  return <form onSubmit={form.handleSubmit((values) => create.mutate(values))} className="space-y-6"><section className="grid gap-5 rounded-2xl border border-slate-800 bg-slate-900/70 p-5 md:grid-cols-2">{field("name", "Account name", "Production Platform")}{field("accountId", "AWS Account ID", "123456789012")}{field("roleArn", "Role ARN", "arn:aws:iam::123456789012:role/CPSMReadOnlyRole")}{field("externalId", "External ID", "Enter a secret external ID")}<label className="block text-sm font-medium text-slate-200">Environment<select {...form.register("environment")} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-slate-100"><option value="development">Development</option><option value="staging">Staging</option><option value="production">Production</option></select></label>{field("scanSchedule", "Scan schedule", "Every day at 02:00")}</section><section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5"><h2 className="font-semibold text-white">Regions</h2><div className="mt-4 flex flex-wrap gap-2">{awsRegions.map((region) => <label key={region} className="cursor-pointer"><input type="checkbox" className="sr-only" checked={regions.includes(region)} onChange={() => toggle(region)} /><span className={`inline-flex rounded-lg border px-3 py-2 text-sm ${regions.includes(region) ? "border-sky-400/60 bg-sky-400/10 text-sky-100" : "border-slate-700 bg-slate-950 text-slate-400"}`}>{region}</span></label>)}</div>{form.formState.errors.regions ? <p className="mt-2 text-sm text-rose-300">{form.formState.errors.regions.message}</p> : null}</section>{create.isError ? <p role="alert" className="rounded-xl border border-rose-400/30 bg-rose-950/40 p-3 text-sm text-rose-100">{create.error instanceof Error ? create.error.message : "Could not save the account."}</p> : null}<div className="flex justify-end gap-3"><button type="button" onClick={() => router.push("/accounts")} className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800">Cancel</button><button disabled={create.isPending} className="inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-bold text-slate-950 disabled:opacity-60">{create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save account</button></div><p className="text-xs text-slate-500">This form uses the mock account service until a backend AWS Accounts endpoint is available. External IDs are never displayed after submission.</p></form>;
+}

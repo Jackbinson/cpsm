@@ -1,8 +1,10 @@
 import cron from "node-cron";
 import { enqueueScan } from "./scanJobService.js";
+import { logger } from "./structuredLogger.js";
 
 export const startCronJobs = () => {
-  cron.schedule("0 * * * *", async () => {
+  const schedule = "0 * * * *";
+  cron.schedule(schedule, async () => {
     const hour = new Date().toISOString().slice(0, 13);
     try {
       const { scanRun, created } = await enqueueScan({
@@ -10,9 +12,10 @@ export const startCronJobs = () => {
         idempotencyScope: "system:cron",
         requestPayload: { source: "cron", hour },
       });
-      console.log(`[Cron] ${created ? "Queued" : "Reused"} scan ${scanRun.scanId}`);
+      logger.info("cron.scan_enqueued", { scanId: scanRun.scanId, created, hour });
     } catch (error) {
-      console.error("[Cron] Could not queue scan:", error.message);
+      logger.error("cron.scan_enqueue_failed", { hour, error });
     }
   });
+  logger.info("cron.started", { schedule });
 };

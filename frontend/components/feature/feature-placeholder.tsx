@@ -1,0 +1,6 @@
+import { Construction, ServerCog } from "lucide-react";
+import type { FeatureDefinition } from "@/lib/feature-catalog";
+
+export function FeaturePlaceholder({ feature }: { feature: FeatureDefinition }) {
+  return <div className="mx-auto max-w-3xl space-y-6"><section><p className="text-sm font-medium text-sky-300">{feature.eyebrow}</p><h1 className="mt-1 text-3xl font-bold text-white">{feature.title}</h1><p className="mt-3 text-sm leading-6 text-slate-400">{feature.description}</p></section><section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6"><Construction className="h-7 w-7 text-sky-300" /><h2 className="mt-4 text-lg font-semibold text-white">UI foundation is ready</h2><p className="mt-2 text-sm leading-6 text-slate-400">This route is intentionally visible in the application shell, but destructive or persisted actions stay disabled until their API contract is implemented.</p><div className="mt-5 flex gap-3 rounded-xl border border-amber-400/25 bg-amber-400/10 p-4"><ServerCog className="h-5 w-5 flex-none text-amber-200" /><div><p className="text-sm font-semibold text-amber-100">Backend dependency</p><p className="mt-1 text-sm text-amber-100/80">{feature.backendRequirement}</p></div></div></section></div>;
+}

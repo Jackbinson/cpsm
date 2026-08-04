@@ -1,126 +1,162 @@
-import User from '../models/User.js';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import User from "../models/User.js";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import {
+  GoogleIdentityError,
+  verifyGoogleIdToken,
+} from "../services/googleIdentityService.js";
+import { logger } from "../services/structuredLogger.js";
 
-// Hàm hỗ trợ tạo Token
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: '30d',
-  });
-};
+const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 
-// [POST] /api/v1/auth/register
-// Chức năng: Đăng ký tài khoản mới
+const publicUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  avatarUrl: user.avatarUrl || "",
+  emailVerified: Boolean(user.emailVerified),
+});
+
+const generateToken = (user) => jwt.sign(
+  { id: user._id, sessionVersion: user.sessionVersion || 0 },
+  process.env.JWT_SECRET,
+  { expiresIn: process.env.JWT_EXPIRES_IN || "8h" },
+);
+
+const authenticationResponse = (res, status, user, message) => res.status(status).json({
+  success: true,
+  message,
+  data: { ...publicUser(user), token: generateToken(user) },
+});
+
 export const registerUser = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const name = String(req.body?.name || "").trim();
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
 
-    // 1. Kiểm tra xem email đã tồn tại trong hệ thống chưa
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-      return res.status(400).json({ success: false, message: 'Email này đã được sử dụng.' });
+    if (!name || !email || password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Name, a valid email, and a password of at least 8 characters are required.",
+      });
+    }
+    if (await User.exists({ email })) {
+      logger.warn("auth.registration_rejected", { requestId: req.requestId, reason: "email_already_exists" });
+      return res.status(409).json({ success: false, message: "This email is already in use." });
     }
 
-    // 2. Mã hóa mật khẩu (Hashing)
-    // Tạo một 'muối' (salt) với độ khó là 10, sau đó trộn với mật khẩu người dùng
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // 3. Tạo User mới trong Database với mật khẩu đã mã hóa
     const user = await User.create({
       name,
       email,
-      password: hashedPassword,
+      password: await bcrypt.hash(password, 12),
     });
-
-    if (user) {
-      res.status(201).json({
-        success: true,
-        message: 'Đăng ký tài khoản thành công',
-        data: {
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id), // Cấp token luôn cho khỏe, đỡ bắt user đăng nhập lại
-        }
-      });
-    }
-
+    logger.info("auth.registered", { requestId: req.requestId, userId: user._id.toString(), role: user.role });
+    return authenticationResponse(res, 201, user, "Account created successfully.");
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    logger.error("auth.registration_failed", { requestId: req.requestId, error });
+    return res.status(500).json({ success: false, message: "Could not create the account." });
   }
 };
 
-// [POST] /api/v1/auth/login
-// Chức năng: Đăng nhập
 export const loginUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
+    const user = await User.findOne({ email }).select("+password +sessionVersion");
 
-    // 1. Tìm User theo email. 
-    // Phải thêm .select('+password') vì trong Model mình đã cấu hình select: false
-    const user = await User.findOne({ email }).select('+password');
-
-    // 2. Nếu không có user, hoặc hàm bcrypt.compare báo mật khẩu nhập vào không khớp với mật khẩu mã hóa trong DB
-    if (!user || !(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
+    if (!user?.password || !(await bcrypt.compare(password, user.password))) {
+      logger.warn("auth.login_rejected", { requestId: req.requestId, reason: "invalid_credentials" });
+      return res.status(401).json({ success: false, message: "Email or password is incorrect." });
     }
-
-    // 3. Nếu đúng hết thì cấp Token
-    res.status(200).json({
-      success: true,
-      message: 'Đăng nhập thành công',
-      data: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        token: generateToken(user._id),
-      }
-    });
-
+    logger.info("auth.login_succeeded", { requestId: req.requestId, userId: user._id.toString(), role: user.role });
+    return authenticationResponse(res, 200, user, "Signed in successfully.");
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    logger.error("auth.login_failed", { requestId: req.requestId, error });
+    return res.status(500).json({ success: false, message: "Could not sign in." });
   }
 };
 
-// [POST] /api/v1/auth/create-admin
-// Chức năng: Tạo admin account (chỉ dùng lần đầu khởi tạo)
-export const createAdmin = async (req, res) => {
+export const googleLogin = async (req, res) => {
   try {
-    // Kiểm tra xem admin đã tồn tại chưa
-    const adminExists = await User.findOne({ email: 'admin@cspm.com' });
-    if (adminExists) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Admin account đã tồn tại' 
-      });
+    const googleUser = await verifyGoogleIdToken(req.body?.idToken);
+    let user = await User.findOne({ googleId: googleUser.subject }).select("+sessionVersion");
+
+    if (!user) {
+      user = await User.findOne({ email: googleUser.email }).select("+sessionVersion");
+      if (user) {
+        user.googleId = googleUser.subject;
+        user.emailVerified = true;
+        if (!user.avatarUrl) user.avatarUrl = googleUser.picture;
+        await user.save();
+      } else {
+        user = await User.create({
+          name: googleUser.name,
+          email: googleUser.email,
+          googleId: googleUser.subject,
+          avatarUrl: googleUser.picture,
+          emailVerified: true,
+        });
+      }
     }
 
-    // Tạo mật khẩu admin mặc định
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash('admin123', salt);
+    logger.info("auth.google_login_succeeded", { requestId: req.requestId, userId: user._id.toString(), role: user.role });
+    return authenticationResponse(res, 200, user, "Signed in with Google successfully.");
+  } catch (error) {
+    if (error instanceof GoogleIdentityError) {
+      logger.warn("auth.google_login_rejected", { requestId: req.requestId, reason: error.message });
+      return res.status(401).json({ success: false, message: error.message });
+    }
+    logger.error("auth.google_login_failed", { requestId: req.requestId, error });
+    return res.status(500).json({ success: false, message: "Could not sign in with Google." });
+  }
+};
+
+export const getCurrentUser = async (req, res) =>
+  res.status(200).json({ success: true, data: publicUser(req.user) });
+
+export const logout = async (req, res) => {
+  logger.info("auth.logged_out", { requestId: req.requestId, userId: req.user?._id?.toString() });
+  return res.status(200).json({ success: true, message: "Signed out successfully." });
+};
+
+export const logoutAllDevices = async (req, res) => {
+  try {
+    req.user.sessionVersion = (req.user.sessionVersion || 0) + 1;
+    await req.user.save();
+    logger.info("auth.logged_out_all_devices", { requestId: req.requestId, userId: req.user._id.toString() });
+    return res.status(200).json({ success: true, message: "Signed out from all devices." });
+  } catch (error) {
+    logger.error("auth.logout_all_failed", { requestId: req.requestId, userId: req.user?._id?.toString(), error });
+    return res.status(500).json({ success: false, message: "Could not sign out from all devices." });
+  }
+};
+
+// Deliberately disabled until a one-time bootstrap secret is configured.
+export const createAdmin = async (req, res) => {
+  if (!process.env.BOOTSTRAP_ADMIN_SECRET || req.get("X-Bootstrap-Secret") !== process.env.BOOTSTRAP_ADMIN_SECRET) {
+    logger.warn("auth.bootstrap_admin_rejected", { requestId: req.requestId, reason: "disabled_or_invalid_secret" });
+    return res.status(403).json({ success: false, message: "Bootstrap admin endpoint is disabled." });
+  }
+
+  try {
+    const adminExists = await User.findOne({ email: "admin@cspm.com" });
+    if (adminExists) {
+      return res.status(409).json({ success: false, message: "Admin account already exists." });
+    }
 
     const admin = await User.create({
-      name: 'Admin CSPM',
-      email: 'admin@cspm.com',
-      password: hashedPassword,
-      role: 'admin'
+      name: "Admin CSPM",
+      email: "admin@cspm.com",
+      password: await bcrypt.hash("admin123", 12),
+      role: "admin",
+      emailVerified: true,
     });
-
-    res.status(201).json({
-      success: true,
-      message: 'Admin account tạo thành công',
-      data: {
-        _id: admin._id,
-        name: admin.name,
-        email: admin.email,
-        role: admin.role,
-      }
-    });
-
+    logger.info("auth.bootstrap_admin_created", { requestId: req.requestId, userId: admin._id.toString() });
+    return res.status(201).json({ success: true, data: publicUser(admin) });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    logger.error("auth.bootstrap_admin_failed", { requestId: req.requestId, error });
+    return res.status(500).json({ success: false, message: "Could not create bootstrap admin." });
   }
 };

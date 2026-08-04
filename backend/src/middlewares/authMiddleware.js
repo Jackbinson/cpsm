@@ -1,40 +1,50 @@
-import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import jwt from "jsonwebtoken";
+import User from "../models/User.js";
+
+export const getCookie = (header, name) => {
+  const prefix = `${name}=`;
+  const value = String(header || "")
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : null;
+};
+
+export const requireRole = (...roles) => (req, res, next) => {
+  if (!req.user || !roles.includes(req.user.role)) {
+    return res.status(403).json({ success: false, message: "Insufficient permissions." });
+  }
+  return next();
+};
+
+export const authenticateAccessToken = async (token) => {
+  if (!token) return null;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select("-password +sessionVersion");
+    if (!user || (decoded.sessionVersion || 0) !== (user.sessionVersion || 0)) return null;
+    return user;
+  } catch {
+    return null;
+  }
+};
 
 export const protect = async (req, res, next) => {
-  let token;
+  const bearerToken = req.headers.authorization?.startsWith("Bearer ")
+    ? req.headers.authorization.slice(7)
+    : null;
+  const token = bearerToken || getCookie(req.headers.cookie, "cpsm_access_token");
 
-  // 1. Kiểm tra xem Request có mang theo vé (Header Authorization) không
-  // Chuẩn của vé luôn bắt đầu bằng chữ "Bearer "
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      // 2. Cắt lấy cái mã token (bỏ chữ Bearer đi)
-      token = req.headers.authorization.split(' ')[1];
-
-      // 3. Đưa cho máy soi (JWT) kiểm tra xem token có phải do chính Server mình cấp không
-      // Nó sẽ dùng JWT_SECRET trong file .env để giải mã
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // 4. Nếu vé xịn, tìm xem thông tin User cầm vé này là ai. 
-      // Gán thông tin user đó vào biến req.user (nhớ trừ mật khẩu ra)
-      req.user = await User.findById(decoded.id).select('-password');
-
-      // 5. Cho phép đi tiếp vào Controller
-      next();
-    } catch (error) {
-      console.error('Lỗi giải mã Token:', error.message);
-      res.status(401).json({ 
-        success: false, 
-        message: 'Vé không hợp lệ hoặc đã hết hạn. Kẻ gian xin mời ra ngoài!' 
-      });
-    }
-  }
-
-  // 6. Nếu tìm mỏi mắt mà không thấy chữ Bearer token nào
   if (!token) {
-    res.status(401).json({ 
-      success: false, 
-      message: 'Dừng bước! Bạn chưa đăng nhập và không có Token.' 
-    });
+    return res.status(401).json({ success: false, message: "Authentication is required." });
   }
+
+  const user = await authenticateAccessToken(token);
+  if (!user) {
+    return res.status(401).json({ success: false, message: "Session is invalid or expired." });
+  }
+
+  req.user = user;
+  return next();
 };
